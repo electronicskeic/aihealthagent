@@ -12,45 +12,41 @@ class LLMConfig:
 
 
 def get_llm_config() -> LLMConfig | None:
-    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
         return None
-    model = (os.getenv("OPENAI_MODEL") or "gpt-4o-mini").strip()
+    model = (os.getenv("GEMINI_MODEL") or "gemini-1.5-flash").strip()
     return LLMConfig(api_key=api_key, model=model)
 
 
 def chat_with_llm(*, system_prompt: str, messages: list[dict[str, Any]], model: str) -> str:
     """
-    Uses the OpenAI Python SDK if available/configured.
-
-    This is intentionally defensive because environments vary (openai v0 vs v1+).
+    Uses the Google Generative AI Python SDK.
     """
-    api_key = (os.getenv("OPENAI_API_KEY") or "").strip()
+    import google.generativeai as genai  # type: ignore
+
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
     if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set.")
+        raise RuntimeError("GEMINI_API_KEY is not set.")
 
-    # Prefer OpenAI v1+ client.
+    genai.configure(api_key=api_key)
+
+    history = []
+    for msg in messages:
+        role = "model" if msg["role"] == "assistant" else "user"
+        history.append({"role": role, "parts": [msg["content"]]})
+
     try:
-        from openai import OpenAI  # type: ignore
-
-        client = OpenAI(api_key=api_key)
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system_prompt}, *messages],
-            temperature=0.4,
+        m = genai.GenerativeModel(
+            model_name=model,
+            system_instruction=system_prompt,
         )
-        return (resp.choices[0].message.content or "").strip()
-    except Exception:
-        pass
-
-    # Fallback to older openai.ChatCompletion API (legacy).
-    import openai  # type: ignore
-
-    openai.api_key = api_key
-    resp = openai.ChatCompletion.create(
-        model=model,
-        messages=[{"role": "system", "content": system_prompt}, *messages],
-        temperature=0.4,
-    )
-    return (resp["choices"][0]["message"]["content"] or "").strip()
+        response = m.generate_content(
+            contents=history,
+            generation_config=genai.GenerationConfig(temperature=0.4)
+        )
+        return (response.text or "").strip()
+    except Exception as e:
+        print(f"Gemini Error: {e}")
+        return ""
 

@@ -131,3 +131,49 @@ def to_model_frame(df: pd.DataFrame) -> pd.DataFrame:
 def as_feature_dict(*, age: int, height_m: float, weight_kg: float, bmi: float) -> dict[str, Any]:
     return {"Age": float(age), "Height": float(height_m), "Weight": float(weight_kg), "BMI": float(bmi)}
 
+
+@dataclass(frozen=True)
+class DiabetesDatasetSummary:
+    n: int
+    positive_rate: float
+    glucose_mean: float
+    bmi_mean: float
+    age_mean: float
+
+
+def load_diabetes_dataset(path: Path | str) -> pd.DataFrame:
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(str(p))
+    df = pd.read_csv(p)
+    df.columns = [str(c).strip() for c in df.columns]
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df.dropna()
+
+
+def summarize_diabetes_dataset(df: pd.DataFrame) -> DiabetesDatasetSummary:
+    n = int(len(df))
+    if n == 0 or "Outcome" not in df.columns:
+        return DiabetesDatasetSummary(n=0, positive_rate=0.0, glucose_mean=0.0, bmi_mean=0.0, age_mean=0.0)
+    
+    outcome = df["Outcome"].astype(int)
+    return DiabetesDatasetSummary(
+        n=n,
+        positive_rate=float(outcome.mean()),
+        glucose_mean=float(df["Glucose"].mean()) if "Glucose" in df.columns else float("nan"),
+        bmi_mean=float(df["BMI"].mean()) if "BMI" in df.columns else float("nan"),
+        age_mean=float(df["Age"].mean()) if "Age" in df.columns else float("nan"),
+    )
+
+
+def to_diabetes_model_frame(df: pd.DataFrame) -> pd.DataFrame:
+    required = {"Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI", "DiabetesPedigreeFunction", "Age", "Outcome"}
+    missing = required - set(df.columns)
+    if missing:
+        raise ValueError(f"Diabetes dataset missing required columns: {sorted(missing)}")
+    
+    out = df.copy()
+    out["target_diabetes"] = out["Outcome"].astype(int)
+    features = ["Pregnancies", "Glucose", "BloodPressure", "SkinThickness", "Insulin", "BMI", "DiabetesPedigreeFunction", "Age", "target_diabetes"]
+    return out[features]

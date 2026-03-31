@@ -7,8 +7,8 @@ import plotly.express as px
 import streamlit as st
 
 from health_agent.chatbot import ChatContext, answer
-from health_agent.data import bmi_category, calculate_bmi, load_dataset, summarize_dataset, to_model_frame
-from health_agent.model import evaluate_model, predict_obesity_risk, train_obesity_model
+from health_agent.data import bmi_category, calculate_bmi, load_dataset, summarize_dataset, to_model_frame, load_diabetes_dataset, summarize_diabetes_dataset, to_diabetes_model_frame
+from health_agent.model import evaluate_model, predict_obesity_risk, train_obesity_model, train_diabetes_model, predict_diabetes_risk, evaluate_diabetes_model
 from health_agent.llm import chat_with_llm, get_llm_config
 from health_agent.recommendations import build_plan
 from health_agent.storage import (
@@ -26,6 +26,7 @@ from health_agent.storage import (
 
 APP_DIR = Path(__file__).parent
 DATASET_PATH = APP_DIR / "bmi.xlsx"
+DATASET_DIABETES_PATH = APP_DIR / "diabetes.csv"
 DB_PATH = APP_DIR / "health_agent.db"
 
 
@@ -54,6 +55,19 @@ def get_model():
     df = get_data()
     df_model = to_model_frame(df)
     return train_obesity_model(df_model)
+
+
+@st.cache_data(show_spinner=False)
+def get_diabetes_data() -> pd.DataFrame:
+    # Force cache reload by changing source slightly
+    return load_diabetes_dataset(DATASET_DIABETES_PATH)
+
+
+@st.cache_resource(show_spinner=False)
+def get_diabetes_model():
+    df = get_diabetes_data()
+    df_model = to_diabetes_model_frame(df)
+    return train_diabetes_model(df_model)
 
 
 def pct(x: float) -> str:
@@ -122,14 +136,14 @@ with st.sidebar:
         st.session_state["user"] = None
         st.rerun()
 
-    page = st.radio("Go to", ["Onboarding", "My Plan", "Insights", "Report", "Chat"], index=0, label_visibility="collapsed")
+    page = st.radio("Go to", ["Onboarding", "My Plan", "Diabetes Risk", "Insights", "Report", "Chat"], index=0, label_visibility="collapsed")
     st.divider()
     st.markdown("### Chat mode")
     if llm_cfg:
         st.write(f"LLM enabled: **{llm_cfg.model}**")
         use_llm = st.toggle("Use LLM for chat", value=True)
     else:
-        st.write("LLM disabled (set `OPENAI_API_KEY` to enable).")
+        st.write("LLM disabled (set `GEMINI_API_KEY` to enable).")
         use_llm = False
 
     st.divider()
@@ -144,6 +158,11 @@ df = get_data()
 summary = summarize_dataset(df)
 model = get_model()
 df_model = to_model_frame(df)
+
+df_diabetes = get_diabetes_data()
+summary_diabetes = summarize_diabetes_dataset(df_diabetes)
+model_diabetes = get_diabetes_model()
+df_diabetes_model = to_diabetes_model_frame(df_diabetes)
 
 colA, colB, colC, colD = st.columns(4)
 colA.metric("Dataset size", f"{summary.n}")
@@ -284,6 +303,29 @@ elif page == "My Plan":
             st.plotly_chart(fig, use_container_width=True)
 
 
+elif page == "Diabetes Risk":
+    st.subheader("Diabetes Risk Prediction")
+    st.write("Enter your clinical metrics to estimate diabetes risk based on the Pima Indians diabetes dataset.")
+    
+    col1, col2 = st.columns(2)
+    preg = col1.number_input("Pregnancies", min_value=0, max_value=20, value=0, step=1)
+    glucose = col2.number_input("Glucose", min_value=0.0, max_value=300.0, value=120.0)
+    bp = col1.number_input("Blood Pressure (Diastolic)", min_value=0.0, max_value=200.0, value=70.0)
+    skin = col2.number_input("Skin Thickness (mm)", min_value=0.0, max_value=100.0, value=20.0)
+    insulin = col1.number_input("Insulin (mu U/ml)", min_value=0.0, max_value=900.0, value=79.0)
+    bmi_input = col2.number_input("BMI", min_value=0.0, max_value=70.0, value=st.session_state.get("last_bmi", 25.0))
+    dpf = col1.number_input("Diabetes Pedigree Function", min_value=0.001, max_value=3.0, value=0.5)
+    age_input = col2.number_input("Age", min_value=1, max_value=120, value=30)
+    
+    if st.button("Predict Diabetes Risk", type="primary"):
+        risk = predict_diabetes_risk(model_diabetes, pregnancies=preg, glucose=glucose, bp=bp, skin=skin, insulin=insulin, bmi=bmi_input, dpf=dpf, age=age_input)
+        st.session_state["last_diabetes_risk"] = risk
+        
+    dr = st.session_state.get("last_diabetes_risk")
+    if dr:
+        st.success(f"**Risk Level:** {dr.risk_level}  \n**Probability:** {dr.diabetes_probability:.1%}")
+
+
 elif page == "Insights":
     st.subheader("Insights")
 
@@ -312,6 +354,19 @@ elif page == "Insights":
     st.write(f"- Uses features: **Age, Height, Weight, BMI**")
     st.write(f"- Cross-validated ROC-AUC on this dataset: **{q.roc_auc_mean:.3f} ± {q.roc_auc_std:.3f}**")
     st.caption("Risk is dataset-based and may not generalize to all populations.")
+
+    st.divider()
+    st.markdown("### Diabetes Data Insights")
+    q2 = evaluate_diabetes_model(df_diabetes_model, folds=5)
+    st.write(f"- Cross-validated ROC-AUC on Pima Diabetes dataset: **{q2.roc_auc_mean:.3f} ± {q2.roc_auc_std:.3f}**")
+    
+    c3, c4 = st.columns(2)
+    with c3:
+        fig_d1 = px.histogram(df_diabetes, x="Glucose", color="Outcome", title="Glucose by Diabetes Outcome")
+        st.plotly_chart(fig_d1, use_container_width=True)
+    with c4:
+        fig_d2 = px.histogram(df_diabetes, x="BMI", color="Outcome", title="BMI by Diabetes Outcome")
+        st.plotly_chart(fig_d2, use_container_width=True)
 
 
 elif page == "Report":
@@ -385,9 +440,11 @@ elif page == "Chat":
                 "Do not claim to diagnose disease. If asked for medical advice, recommend a clinician.\n\n"
                 f"Dataset: n={summary.n}, BMI_mean={summary.bmi_mean:.2f}, overweight_rate={pct(summary.overweight_rate)}, "
                 f"obesity_rate={pct(summary.obese_rate)}, age_bmi_corr={summary.age_bmi_corr:.3f}.\n"
+                f"Diabetes Dataset: n={summary_diabetes.n}, positive_rate={pct(summary_diabetes.positive_rate)}.\n"
                 f"User profile: {st.session_state.get('profile')}\n"
                 f"Latest BMI: {st.session_state.get('last_bmi')}\n"
-                f"Latest risk: {st.session_state.get('last_risk')}\n"
+                f"Latest obesity risk: {st.session_state.get('last_risk')}\n"
+                f"Latest diabetes risk: {st.session_state.get('last_diabetes_risk')}\n"
             )
             history = []
             for speaker, msg in st.session_state["chat"][-12:]:
